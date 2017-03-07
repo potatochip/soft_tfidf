@@ -184,7 +184,6 @@ class SemiSoftTfidf(object):
                     sim_pairs.append(self.similar(x_ix, y_ix, dist))
                     x_alt[x_bag[x_ix]] = y_bag[y_ix]
                     y_alt[y_bag[y_ix]] = x_bag[x_ix]
-
         return x_alt, y_alt, sim_pairs
 
     @staticmethod
