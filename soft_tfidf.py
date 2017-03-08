@@ -46,7 +46,6 @@ class SemiSoftTfidf(object):
         self.__dict__.update(d)
 
     def _inject_vectorizer(self, idf, vocabulary):
-        TfidfVectorizer.idf_ = idf
         vectorizer = TfidfVectorizer(**self.vectorizer_arguments)
         vectorizer._tfidf._idf_diag = sp.spdiags(
             idf,
