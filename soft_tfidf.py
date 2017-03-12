@@ -5,18 +5,19 @@ Close similarity terms use the partner term idf if it is available.
 Additional option to calculate cos sim from the swapped vectors, but this tends to overweight
 duplicate tokens at the moment.
 """
-from collections import namedtuple
+import bisect
+import operator
+from collections import Counter, namedtuple
 
 import numpy as np
 import scipy.sparse as sp
+from jellyfish import jaro_winkler
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics.pairwise import linear_kernel
 from sklearn.preprocessing import normalize
 
-from jellyfish import jaro_winkler
 
-
-class SemiSoftTfidf(object):
+class SoftTfidf(object):
     nan_term = u'_UNKNOWN_'
     similar = namedtuple('Similar', ['r1', 'r2', 'sim'])
     vectorizer_arguments = {
@@ -71,13 +72,13 @@ class SemiSoftTfidf(object):
 
     @staticmethod
     def _sorted_tokens(x):
-        return sorted(x.split())
+        return sorted(unicode(x).split())
 
     @classmethod
     def _sorted_terms(cls, x):
         return u' '.join(cls._sorted_tokens(x))
 
-    def similarity(self, x, y, threshold=0.95, return_cos_sim=False):
+    def similarity(self, x, y, threshold=0.95):
         self.x_bag = self._sorted_tokens(x)
         self.y_bag = self._sorted_tokens(y)
         x_bag = self.x_bag
@@ -90,16 +91,13 @@ class SemiSoftTfidf(object):
         x_idf = self._get_idf_vector(new_x_bag, x_bag)
         y_idf = self._get_idf_vector(new_y_bag, y_bag)
 
-        if return_cos_sim:
-            return self._cos_sim(x_bag, y_bag, x_idf, y_idf, y_alt)
-
         sim_pairs.sort(reverse=True, key=lambda x: x.sim)
         x_used = np.array([False] * len(x_bag), dtype=bool)
         y_used = np.array([False] * len(y_bag), dtype=bool)
 
         sim = 0.0
         for s in sim_pairs:
-            if(x_used[s.r1] | y_used[s.r2]):
+            if x_used[s.r1] | y_used[s.r2]:
                 continue
             x_bag_idf = x_idf[s.r1]
             y_bag_idf = y_idf[s.r2]
@@ -107,28 +105,6 @@ class SemiSoftTfidf(object):
             x_used[s.r1] = True
             y_used[s.r2] = True
         return float(sim)
-
-    def _cos_sim(self, x_bag, y_bag, x_idf, y_idf, y_alt):
-        # TODO: currently not symmetric
-        tokens = set(x_bag)
-        tokens.update(set(y_bag))
-        token_column_d = {i: ix for ix, i in enumerate(tokens)}
-        x = np.zeros(len(token_column_d))
-        y = np.zeros(len(token_column_d))
-        for ix, idf in enumerate(x_idf):
-            token = x_bag[ix]
-            tf = float(1 + np.log(x_bag.count(token))) / (len(x_bag) or 1)
-            column = token_column_d[token]
-            x[column] = tf * idf
-        for ix, idf in enumerate(y_idf):
-            token = y_bag[ix]
-            tf = float(1 + np.log(y_bag.count(token))) / (len(y_bag) or 1)
-            token = y_alt.get(token, token)
-            column = token_column_d[token]
-            y[column] = tf * idf
-        x = x.reshape(1, -1)
-        y = y.reshape(1, -1)
-        return cosine_similarity(x, y)[0][0]
 
     @staticmethod
     def _normalize_list(l):
@@ -200,3 +176,77 @@ class SemiSoftTfidf(object):
         i = list(np.ogrid[[slice(x) for x in a.shape]])
         i[axis] = a.argsort(axis)
         return b[i]
+
+
+class SemiSoftTfidf(object):
+    # BUG: unknown terms are currently counted as multiple same terms
+    nan_term = u'_UNKNOWN_'
+
+    def __init__(self, corpus, threshold=0.9):
+        self.corpus = corpus
+        self.threshold = threshold
+        self.vectorizer = TfidfVectorizer(norm=None, sublinear_tf=True, smooth_idf=True, lowercase=False, tokenizer=lambda x: x.split())
+        self.matrix = normalize(self.vectorizer.fit_transform(corpus))
+        self.column_lookup = self.vectorizer.vocabulary_
+        self.sorted_terms = sorted(i for i in self.column_lookup.keys())
+        self.probability_lookup = self._probabilities()
+        self._max_idx = len(self.sorted_terms)
+        self._min_idx = 0
+
+    def _probabilities(self):
+        count = Counter()
+        for doc in self.corpus:
+            for token in set(doc.split()):
+                count[token] += 1
+        max_count = len(count)
+        return {k: float(v)/max_count for k, v in count.items()}
+
+    def _closest_lexicographic_idx(self, term):
+        return bisect.bisect_left(self.sorted_terms, term)
+
+    def _windowed_distance(self, term, window=1000):
+        idx = self._closest_lexicographic_idx(term)
+        windowed_terms = self.sorted_terms[max(idx-window, self._min_idx): min(idx+window, self._max_idx)]
+        return sorted([(jaro_winkler(t, term), t) for t in windowed_terms], reverse=True)
+
+    def _break_tie(self, terms):
+        return max((self.probability_lookup[t], t) for t in terms)[1]
+
+    def _max_distances(self, term):
+        max_list = []
+        current_max = self.threshold
+        for i in self._windowed_distance(term):
+            if i[0] >= current_max:
+                max_list.append(i)
+                current_max = i[0]
+            else:
+                break
+        return max_list
+
+    def _best_match(self, term):
+        if term in self.sorted_terms:
+            return (1.0, term)
+        max_list = self._max_distances(term)
+        num_maxes = len(max_list)
+        if num_maxes == 0:
+            return (0.0, term)
+        elif num_maxes == 1:
+            return max_list[0]
+        else:
+            tie_broken_term = self._break_tie(i[1] for i in max_list)
+            return (max_list[0][0], tie_broken_term)
+
+    def retrieve(self, query, best_matches=False):
+        query = unicode(query)
+        t_bag = query.split()
+        sims, terms = zip(*[self._best_match(t) for t in t_bag])
+        transformed = self.vectorizer.transform([' '.join(terms)])
+        dist_matrix = sp.csr_matrix((sims, ([0]*len(terms), [self.column_lookup[t] for t in terms])), transformed.shape)
+        comparison_vector = normalize(transformed.multiply(dist_matrix))
+        cos_sim = linear_kernel(self.matrix, comparison_vector).ravel()
+        if best_matches:
+            partial_sort_indexes = np.argpartition(cos_sim, np.arange(-5, 0, 1), axis=0)
+            closest_idx = reversed(partial_sort_indexes[-5:])
+            return operator.itemgetter(*closest_idx)(self.corpus)
+        closest_idx = np.argmax(cos_sim)
+        return self.corpus[closest_idx]
