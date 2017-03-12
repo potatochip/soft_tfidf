@@ -72,7 +72,7 @@ class SoftTfidf(object):
 
     @staticmethod
     def _sorted_tokens(x):
-        return sorted(x.split())
+        return sorted(unicode(x).split())
 
     @classmethod
     def _sorted_terms(cls, x):
