@@ -246,7 +246,7 @@ class SemiSoftTfidf(object):
         cos_sim = linear_kernel(self.matrix, comparison_vector).ravel()
         if best_matches:
             partial_sort_indexes = np.argpartition(cos_sim, np.arange(-5, 0, 1), axis=0)
-            closest_idx = partial_sort_indexes[-5:][::-1]
+            closest_idx = reversed(partial_sort_indexes[-5:])
             return operator.itemgetter(*closest_idx)(self.corpus)
         closest_idx = np.argmax(cos_sim)
         return self.corpus[closest_idx]
