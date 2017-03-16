@@ -14,36 +14,39 @@ from collections import Counter, namedtuple
 
 import numpy as np
 import scipy.sparse as sp
+from cachetools import LRUCache
 from jellyfish import jaro_winkler
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import linear_kernel
 from sklearn.preprocessing import normalize
 
 
-class SoftTfidf(object):
+class BaseSoft(object):
+    nan_term = u'_UNKNOWN_'
+    similar = namedtuple('Similar', ['r1', 'r2', 'sim'])
+    vectorizer_arguments = {
+        'tokenizer': lambda x: x.split(),
+        'smooth_idf': True,
+        'sublinear_tf': True,
+        'lowercase': False,
+        'norm': None  # normalize later in case we need to weight on the fly
+    }
+
+class SoftTfidf(BaseSoft):
     """
-    Based off the original metric by Cohen. Returns the similarity of two strings
+    Based off the original metric by C_ohen. Returns the similarity of two strings
     using a combination of tfidf and jaro-winkler
 
     Args:
         corpus (list of str): a list of each document for tfidf weighting
         verbose (bool, default True): for logging. not used in this implementation
     """
-    nan_term = u'_UNKNOWN_'
-    similar = namedtuple('Similar', ['r1', 'r2', 'sim'])
-    vectorizer_arguments = {
-        'tokenizer': lambda x: x.split(),
-        'smooth_idf': False,
-        'sublinear_tf': True,
-        'lowercase': False,
-        'norm': None  # normalize later in case we need to weight on the fly
-    }
-
     def __init__(self, corpus, verbose=True):
         self.corpus = corpus
         self.vectorizer = None
         self.vocabulary = None
         self.tfidf_dict = {}
+        self._cache = LRUCache(10000)
         self._build_dict()
 
     def __getstate__(self):
@@ -149,7 +152,10 @@ class SoftTfidf(object):
         term = ' '.join(raw_tokens)
         if term in self.tfidf_dict:
             return self.tfidf_dict[term]
-        return self._transform_term(term, tokens, raw_tokens)
+        elif term in self._cache:
+            return self._cache[term]
+        else:
+            return self._transform_term(term, tokens, raw_tokens)
 
     def _transform_term(self, term, tokens, raw_tokens):
         """creates tfidf weight vector for tokens"""
@@ -169,7 +175,7 @@ class SoftTfidf(object):
             for ix, word in enumerate(tokens)
         ]
         unit_norm_weight_vector = self._normalize_list(weight_vector)
-        self.tfidf_dict[term] = unit_norm_weight_vector
+        self._cache[term] = unit_norm_weight_vector
         return unit_norm_weight_vector
 
     def _swap_unseen_tokens(self, tokens, sim_dict):
@@ -219,7 +225,7 @@ class SoftTfidf(object):
         return b[i]
 
 
-class SemiSoftTfidf(object):
+class SemiSoftTfidf(BaseSoft):
     """Attempt to apply Cohen's concept to information retrieval
 
     Args:
@@ -230,13 +236,11 @@ class SemiSoftTfidf(object):
             we will look for similar terms in the corpus
     """
     # BUG: unknown terms are currently counted as multiple same terms
-    nan_term = u'_UNKNOWN_'
-
     def __init__(self, corpus, threshold=0.9, window=1000):
         self.corpus = corpus
         self.threshold = threshold
         self.window = window
-        self.vectorizer = TfidfVectorizer(norm=None, sublinear_tf=True, smooth_idf=True, lowercase=False, tokenizer=lambda x: x.split())
+        self.vectorizer = TfidfVectorizer(**self.vectorizer_arguments)
         self.matrix = normalize(self.vectorizer.fit_transform(corpus))
         self.column_lookup = self.vectorizer.vocabulary_
         self.sorted_terms = sorted(i for i in self.column_lookup.keys())
@@ -312,7 +316,9 @@ class SemiSoftTfidf(object):
         t_bag = query.split()
         sims, terms = zip(*[self._best_match(t) for t in t_bag])
         transformed = self.vectorizer.transform([' '.join(terms)])
-        dist_matrix = sp.csr_matrix((sims, ([0]*len(terms), [self.column_lookup[t] for t in terms])), transformed.shape)
+        dist_matrix = sp.csr_matrix(
+            (sims, ([0]*len(terms), [self.column_lookup[t] for t in terms])),
+            transformed.shape)
         comparison_vector = normalize(transformed.multiply(dist_matrix))
         cos_sim = linear_kernel(self.matrix, comparison_vector).ravel()
         if best_matches:
