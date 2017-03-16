@@ -58,6 +58,7 @@ class SoftTfidf(BaseSoft):
 
     def __setstate__(self, d):
         """set state for pickle serialization"""
+        self._cache = LRUCache(10000)
         idf = d.pop('idf')
         self.vectorizer = self._inject_vectorizer(idf, d['vocabulary'])
         self.__dict__.update(d)
