@@ -117,7 +117,7 @@ class SoftTfidf(object):
         Returns:
             float: a representation of how similar the two strings are
         """
-        self.x_bag = self._sorted_tokens(x)
+        self.x_bag = self._sorted_tokens(x)  # for convenience
         self.y_bag = self._sorted_tokens(y)
         x_bag = self.x_bag
         y_bag = self.y_bag
