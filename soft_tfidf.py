@@ -128,14 +128,17 @@ class SoftTfidf(object):
 
         x_idf = self._get_idf_vector(new_x_bag, x_bag)
         y_idf = self._get_idf_vector(new_y_bag, y_bag)
+        return self._sum_with_max_for_token(sim_pairs, x_idf, y_idf)
 
+    def _sum_with_max_for_token(self, sim_pairs, x_idf, y_idf):
+        """sums the max sim for each token weighted by idf"""
         sim_pairs.sort(reverse=True, key=lambda x: x.sim)
-        x_used = np.array([False] * len(x_bag), dtype=bool)
-        y_used = np.array([False] * len(y_bag), dtype=bool)
+        x_used = np.array([False] * len(x_idf), dtype=bool)
+        y_used = np.array([False] * len(y_idf), dtype=bool)
 
         sim = 0.0
         for s in sim_pairs:
-            if x_used[s.r1] | y_used[s.r2]:
+            if(x_used[s.r1] | y_used[s.r2]):
                 continue
             x_bag_idf = x_idf[s.r1]
             y_bag_idf = y_idf[s.r2]
