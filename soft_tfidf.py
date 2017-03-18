@@ -2,8 +2,9 @@
 Python implememtation of Soft-Tfidf
 
 Improved over the original in a few ways:
-Terms not seen in the corpus are not ignored. Instead appropriate tfidf weight is given to them.
+Appropriate weighting given to terms that don't exist in the corpus.
 Close similarity terms use the partner term idf if it is available.
+No longer a symmetry or overflow problem with the results.
 
 Also includes a second class called SemiSofTfidf that attempts to apply the soft-tfidf
 concept to information retrieval.
@@ -20,19 +21,17 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import linear_kernel
 from sklearn.preprocessing import normalize
 
+NAN_TERM = u'_UNKNOWN_'
+VECTORIZER_ARGS = {
+    'tokenizer': lambda x: x.split(),
+    'smooth_idf': True,
+    'sublinear_tf': True,
+    'lowercase': False,
+    'norm': None  # normalize later in case we need to weight on the fly
+}
 
-class BaseSoft(object):
-    nan_term = u'_UNKNOWN_'
-    similar = namedtuple('Similar', ['r1', 'r2', 'sim'])
-    vectorizer_arguments = {
-        'tokenizer': lambda x: x.split(),
-        'smooth_idf': True,
-        'sublinear_tf': True,
-        'lowercase': False,
-        'norm': None  # normalize later in case we need to weight on the fly
-    }
 
-class SoftTfidf(BaseSoft):
+class SoftTfidf(object):
     """
     Based off the original metric by C_ohen. Returns the similarity of two strings
     using a combination of tfidf and jaro-winkler
@@ -41,6 +40,8 @@ class SoftTfidf(BaseSoft):
         corpus (list of str): a list of each document for tfidf weighting
         verbose (bool, default True): for logging. not used in this implementation
     """
+    similar = namedtuple('Similar', ['r1', 'r2', 'sim'])
+
     def __init__(self, corpus, verbose=True):
         self.corpus = corpus
         self.vectorizer = None
@@ -65,7 +66,7 @@ class SoftTfidf(BaseSoft):
 
     def _inject_vectorizer(self, idf, vocabulary):
         """recreate vectorizer in unpickling"""
-        vectorizer = TfidfVectorizer(**self.vectorizer_arguments)
+        vectorizer = TfidfVectorizer(**VECTORIZER_ARGS)
         vectorizer._tfidf._idf_diag = sp.spdiags(
             idf,
             diags=0,
@@ -78,7 +79,7 @@ class SoftTfidf(BaseSoft):
     def _build_dict(self):
         """creates a dictionary lookup of the tfidf weights assigned to each document"""
         corpus = [self._sorted_terms(i) for i in self.corpus]
-        self.vectorizer = TfidfVectorizer(**self.vectorizer_arguments)
+        self.vectorizer = TfidfVectorizer(**VECTORIZER_ARGS)
         matrix = self.vectorizer.fit_transform(corpus)
         self.vocabulary = self.vectorizer.vocabulary_
 
@@ -171,7 +172,7 @@ class SoftTfidf(BaseSoft):
             idf = np.log(float(len(self.corpus)) / df) + 1.0
             return tf * idf
         weight_vector = [
-            calculate_weight(raw_tokens[ix]) if word == self.nan_term
+            calculate_weight(raw_tokens[ix]) if word == NAN_TERM
             else self._token_weight(matrix, 0, word)
             for ix, word in enumerate(tokens)
         ]
@@ -189,7 +190,7 @@ class SoftTfidf(BaseSoft):
             elif alt in self.vocabulary:
                 new_tokens.append(alt)
             else:
-                new_tokens.append(self.nan_term)
+                new_tokens.append(NAN_TERM)
         return new_tokens
 
     def _get_similar_pairs(self, x_bag, y_bag, threshold):
@@ -226,7 +227,7 @@ class SoftTfidf(BaseSoft):
         return b[i]
 
 
-class SemiSoftTfidf(BaseSoft):
+class SemiSoftTfidf(object):
     """Attempt to apply Cohen's concept to information retrieval
 
     Args:
@@ -241,7 +242,7 @@ class SemiSoftTfidf(BaseSoft):
         self.corpus = corpus
         self.threshold = threshold
         self.window = window
-        self.vectorizer = TfidfVectorizer(**self.vectorizer_arguments)
+        self.vectorizer = TfidfVectorizer(**VECTORIZER_ARGS)
         self.matrix = normalize(self.vectorizer.fit_transform(corpus))
         self.column_lookup = self.vectorizer.vocabulary_
         self.sorted_terms = sorted(i for i in self.column_lookup.keys())
